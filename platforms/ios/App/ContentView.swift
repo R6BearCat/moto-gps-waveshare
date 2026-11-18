@@ -618,6 +618,14 @@ struct ContentView: View {
                 } footer: {
                     Text("圆屏保持开机并靠近 iPhone。连接成功后，当前导航会自动同步。")
                 }
+                Section("通信诊断 · 0.3.1 (6)") {
+                    ShareLink(item: model.bleDiagnostics()) {
+                        Label("导出蓝牙诊断", systemImage: "square.and.arrow.up")
+                    }
+                    Button("复制蓝牙诊断") { UIPasteboard.general.string = model.bleDiagnostics() }
+                    Text("记录发送队列、写入回调和心跳，不包含定位坐标或密钥。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 Section("定位") {
                     statusRow("搜索位置", symbol: "location", value: searchLocationStatus, color: .secondary)
                     if model.searchLocationStatus == .permissionDenied {

@@ -188,10 +188,56 @@ final class ESP32BLECentral: NSObject {
         didSet { onSnapshotChange?(snapshot) }
     }
 
+    private var diagnosticLines: [String] = []
+    private var transportMonitor: Timer?
+    private var writeStartedAtMs: UInt64 = 0
+    private var lastWriteProgressAtMs: UInt64 = 0
+    private var diagnosticTick: UInt64 = 0
+
     private func trace(_ message: @autoclosure () -> String) {
+        let line = "\(Self.monotonicMs()) session=\(sessionID) \(message())"
+        diagnosticLines.append(line)
+        if diagnosticLines.count > 600 { diagnosticLines.removeFirst(diagnosticLines.count - 600) }
         #if DEBUG
-        print("[MotoBLE] \(message())")
+        print("[MotoBLE] \(line)")
         #endif
+    }
+
+    func diagnostics() -> String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "MOTO BLE diagnostic v1 app=\(version) build=\(build)\n" + transportState() + "\n" + diagnosticLines.joined(separator: "\n")
+    }
+
+    private func transportState() -> String {
+        "ready=\(protocolReady) q=\(outboundFrames.count) pump=\(writePumpTask != nil) inFlight=\(writeWithResponseInFlight) canSend=\(peripheral?.canSendWriteWithoutResponse ?? false) ticks=\(diagnosticTick)"
+    }
+
+    // Only pending transport work is monitored. Idle navigation never forces a disconnect.
+    private func startTransportMonitor() {
+        transportMonitor?.invalidate()
+        transportMonitor = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.checkTransportProgress() }
+        }
+    }
+
+    private func checkTransportProgress() {
+        guard shouldMaintainConnection, !transportTeardownInProgress, peripheral != nil else { return }
+        diagnosticTick &+= 1
+        let now = Self.monotonicMs()
+        trace("monitor \(transportState()) rxAge=\(now >= lastValidDeviceFrameAtMs ? now - lastValidDeviceFrameAtMs : 0)")
+        if writeWithResponseInFlight, writeStartedAtMs > 0, now - writeStartedAtMs > 8_000 {
+            recoverFromTransportError("BLE 写入应答超时，正在恢复传输")
+            return
+        }
+        guard !outboundFrames.isEmpty, !writeWithResponseInFlight,
+              now >= lastWriteProgressAtMs, now - lastWriteProgressAtMs >= 2_000 else { return }
+        // A missed readiness callback must not strand queued frames forever.
+        // flushWrites still respects canSendWriteWithoutResponse and pacing.
+        trace("retry stalled queue")
+        writePumpTask?.cancel()
+        writePumpTask = nil
+        flushWrites()
     }
 
     private static let restorationID = "org.example.motogps.central"
@@ -307,6 +353,7 @@ final class ESP32BLECentral: NSObject {
     }
 
     func sendNavigationSnapshot(_ state: MotoNavCoreSnapshot) {
+        trace("navigation input fix=\(state.hasUsableFix) stale=\(state.gnssStale)")
         pendingNavigationState = state
         scheduleNavigationTransmit()
     }
@@ -643,6 +690,8 @@ final class ESP32BLECentral: NSObject {
            !writeWithResponseInFlight
         {
             writeWithResponseInFlight = true
+        writeStartedAtMs = Self.monotonicMs()
+        trace("write withResponse started")
             peripheral.writeValue(frames[0], for: characteristic, type: .withResponse)
             trace("sent reliable handshake frame stage=\(stage) bytes=\(frames[0].count)")
             return
@@ -651,6 +700,11 @@ final class ESP32BLECentral: NSObject {
     }
 
     private func clearProtocolState() {
+        trace("clear protocol")
+        transportMonitor?.invalidate()
+        transportMonitor = nil
+        writeStartedAtMs = 0
+        lastWriteProgressAtMs = 0
         gattSetupTimeoutTask?.cancel()
         gattSetupTimeoutTask = nil
         handshakeTask?.cancel()
@@ -773,6 +827,7 @@ final class ESP32BLECentral: NSObject {
             mapSceneFinalFrame = nil
             resetQueuedFrames = true
         }
+        trace("enqueue frames=\(frames.count) before=\(outboundFrames.count)")
         outboundFrames.append(contentsOf: frames)
         flushWrites()
         return resetQueuedFrames
@@ -823,6 +878,7 @@ final class ESP32BLECentral: NSObject {
                 pendingFrameCount: outboundFrames.count,
                 snapshotFrameCount: 2
             )
+            trace("navigation encode begin geometry=\(geometryRequired)")
             let frames = try BLEOutboundBatch.encodeNavigation(
                 geometryRequired: geometryRequired,
                 encodeGeometry: { try codec.encodeRouteGeometry(from: state) },
@@ -832,6 +888,7 @@ final class ESP32BLECentral: NSObject {
                     )
                 }
             )
+            trace("navigation encode complete frames=\(frames.count)")
             let didResetQueue = try send(frames)
             if geometrySignature == nil || geometryRequired || !didResetQueue {
                 lastRouteGeometrySignature = geometrySignature
@@ -939,6 +996,7 @@ final class ESP32BLECentral: NSObject {
                 pacingMs: Self.writeWithoutResponsePacingMs
             ) {
             case .idle:
+                trace("write backpressure \(transportState())")
                 return
             case let .wait(milliseconds):
                 scheduleWritePump(afterMs: milliseconds)
@@ -948,6 +1006,8 @@ final class ESP32BLECentral: NSObject {
                 // how quickly the terminal drains its application RX queue, so
                 // a while loop can still overrun it when iOS reports space.
                 let frame = outboundFrames.removeFirst()
+                trace("write noResponse bytes=\(frame.count) remaining=\(outboundFrames.count)")
+                lastWriteProgressAtMs = now
                 peripheral.writeValue(
                     frame,
                     for: characteristic,
@@ -966,6 +1026,8 @@ final class ESP32BLECentral: NSObject {
               !writeWithResponseInFlight
         else { return }
         writeWithResponseInFlight = true
+        writeStartedAtMs = Self.monotonicMs()
+        trace("write withResponse started")
         let frame = outboundFrames.removeFirst()
         peripheral.writeValue(
             frame,
@@ -987,6 +1049,7 @@ final class ESP32BLECentral: NSObject {
             try? await Task.sleep(for: .milliseconds(delayMs))
             guard !Task.isCancelled, let self else { return }
             self.writePumpTask = nil
+            self.trace("write pump resumed")
             self.flushWrites()
         }
     }
@@ -1009,6 +1072,7 @@ final class ESP32BLECentral: NSObject {
     }
 
     private func startHeartbeat() {
+        startTransportMonitor()
         heartbeatTask?.cancel()
         heartbeatTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -1360,6 +1424,7 @@ extension ESP32BLECentral: @preconcurrency CBPeripheralDelegate {
         // as soon as notification subscription setup finishes.
         guard let codec else { return }
         guard let frame = characteristic.value, !frame.isEmpty else { return }
+        trace("notify bytes=\(frame.count)")
 
         do {
             let inbound = try codec.pushDeviceFrame(
@@ -1452,6 +1517,7 @@ extension ESP32BLECentral: @preconcurrency CBPeripheralDelegate {
     }
 
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        trace("ready callback current=\(peripheral === self.peripheral)")
         guard shouldMaintainConnection, !transportTeardownInProgress,
               peripheral === self.peripheral else { return }
         flushWrites()
@@ -1468,6 +1534,8 @@ extension ESP32BLECentral: @preconcurrency CBPeripheralDelegate {
               characteristic.service?.uuid == Self.serviceUUID
         else { return }
         writeWithResponseInFlight = false
+        lastWriteProgressAtMs = Self.monotonicMs()
+        writeStartedAtMs = 0
         trace("reliable write completed; error=\(error?.localizedDescription ?? "none")")
         if let error {
             recoverFromTransportError(error.localizedDescription)

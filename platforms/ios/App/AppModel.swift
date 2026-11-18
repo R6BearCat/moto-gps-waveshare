@@ -390,6 +390,8 @@ final class AppModel: ObservableObject {
         beginRoutePreviewRequestIfPossible()
     }
 
+    func bleDiagnostics() -> String { bluetooth.diagnostics() }
+
     func toggleDeviceConnection() {
         bluetooth.toggleConnection()
     }

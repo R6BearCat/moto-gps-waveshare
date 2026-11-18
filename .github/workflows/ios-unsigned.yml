@@ -1,6 +1,8 @@
 name: iOS Unsigned Build
 
 on:
+  push:
+    branches: ['diagnostics/ble-20261119']
   workflow_dispatch:
 
 permissions:
@@ -21,6 +23,10 @@ jobs:
           sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
           xcodebuild -version
           swift --version
+
+      - name: Run navigation core tests
+        working-directory: platforms/ios
+        run: swift test
 
       - name: Install XcodeGen
         run: |

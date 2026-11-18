@@ -26,7 +26,9 @@ jobs:
 
       - name: Run navigation core tests
         working-directory: platforms/ios
-        run: swift test
+        run: |
+          swift test
+          python3 check_ble_transport.py
 
       - name: Install XcodeGen
         run: |

@@ -124,6 +124,17 @@ enum BLEOutboundBatch {
     }
 }
 
+enum BLEWriteProgressPolicy {
+    enum Action: Equatable { case idle, retry, reconnect }
+    static func action(pending: Int, inFlight: Bool, started: UInt64,
+                       progressed: UInt64, now: UInt64) -> Action {
+        if inFlight {
+            return started > 0 && now >= started && now - started > 8_000 ? .reconnect : .idle
+        }
+        return pending > 0 && now >= progressed && now - progressed >= 2_000 ? .retry : .idle
+    }
+}
+
 /// A queued map is not delivered until the terminal acknowledges its complete
 /// logical message. Retries are freshly encoded to preserve wire sequence order.
 struct BLEMapSceneDelivery {
@@ -197,7 +208,7 @@ final class ESP32BLECentral: NSObject {
     private func trace(_ message: @autoclosure () -> String) {
         let line = "\(Self.monotonicMs()) session=\(sessionID) \(message())"
         diagnosticLines.append(line)
-        if diagnosticLines.count > 600 { diagnosticLines.removeFirst(diagnosticLines.count - 600) }
+        if diagnosticLines.count > 2400 { diagnosticLines.removeFirst(diagnosticLines.count - 2400) }
         #if DEBUG
         print("[MotoBLE] \(line)")
         #endif
@@ -209,6 +220,12 @@ final class ESP32BLECentral: NSObject {
         return "MOTO BLE diagnostic v1 app=\(version) build=\(build)\n" + transportState() + "\n" + diagnosticLines.joined(separator: "\n")
     }
 
+    private func frameSummary(_ frame: Data) -> String {
+        let b = [UInt8](frame.prefix(10))
+        guard b.count == 10 else { return "short bytes=\(frame.count)" }
+        return "type=\(b[2]) seq=\(UInt16(b[4]) | UInt16(b[5]) << 8) offset=\(UInt16(b[6]) | UInt16(b[7]) << 8) bytes=\(frame.count)"
+    }
+
     private func transportState() -> String {
         "ready=\(protocolReady) q=\(outboundFrames.count) pump=\(writePumpTask != nil) inFlight=\(writeWithResponseInFlight) canSend=\(peripheral?.canSendWriteWithoutResponse ?? false) ticks=\(diagnosticTick)"
     }
@@ -216,8 +233,12 @@ final class ESP32BLECentral: NSObject {
     // Only pending transport work is monitored. Idle navigation never forces a disconnect.
     private func startTransportMonitor() {
         transportMonitor?.invalidate()
+        let monitoredSession = sessionID
         transportMonitor = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.checkTransportProgress() }
+            Task { @MainActor [weak self] in
+                guard let self, self.sessionID == monitoredSession else { return }
+                self.checkTransportProgress()
+            }
         }
     }
 
@@ -226,12 +247,15 @@ final class ESP32BLECentral: NSObject {
         diagnosticTick &+= 1
         let now = Self.monotonicMs()
         trace("monitor \(transportState()) rxAge=\(now >= lastValidDeviceFrameAtMs ? now - lastValidDeviceFrameAtMs : 0)")
-        if writeWithResponseInFlight, writeStartedAtMs > 0, now - writeStartedAtMs > 8_000 {
+        switch BLEWriteProgressPolicy.action(pending: outboundFrames.count,
+            inFlight: writeWithResponseInFlight, started: writeStartedAtMs,
+            progressed: lastWriteProgressAtMs, now: now) {
+        case .idle: return
+        case .reconnect:
             recoverFromTransportError("BLE 写入应答超时，正在恢复传输")
             return
+        case .retry: break
         }
-        guard !outboundFrames.isEmpty, !writeWithResponseInFlight,
-              now >= lastWriteProgressAtMs, now - lastWriteProgressAtMs >= 2_000 else { return }
         // A missed readiness callback must not strand queued frames forever.
         // flushWrites still respects canSendWriteWithoutResponse and pacing.
         trace("retry stalled queue")
@@ -690,8 +714,8 @@ final class ESP32BLECentral: NSObject {
            !writeWithResponseInFlight
         {
             writeWithResponseInFlight = true
-        writeStartedAtMs = Self.monotonicMs()
-        trace("write withResponse started")
+            writeStartedAtMs = Self.monotonicMs()
+            trace("write withResponse started")
             peripheral.writeValue(frames[0], for: characteristic, type: .withResponse)
             trace("sent reliable handshake frame stage=\(stage) bytes=\(frames[0].count)")
             return
@@ -1006,7 +1030,7 @@ final class ESP32BLECentral: NSObject {
                 // how quickly the terminal drains its application RX queue, so
                 // a while loop can still overrun it when iOS reports space.
                 let frame = outboundFrames.removeFirst()
-                trace("write noResponse bytes=\(frame.count) remaining=\(outboundFrames.count)")
+                trace("write noResponse \(frameSummary(frame)) remaining=\(outboundFrames.count)")
                 lastWriteProgressAtMs = now
                 peripheral.writeValue(
                     frame,
@@ -1029,6 +1053,7 @@ final class ESP32BLECentral: NSObject {
         writeStartedAtMs = Self.monotonicMs()
         trace("write withResponse started")
         let frame = outboundFrames.removeFirst()
+        trace("write withResponse \(frameSummary(frame))")
         peripheral.writeValue(
             frame,
             for: characteristic,
@@ -1424,7 +1449,7 @@ extension ESP32BLECentral: @preconcurrency CBPeripheralDelegate {
         // as soon as notification subscription setup finishes.
         guard let codec else { return }
         guard let frame = characteristic.value, !frame.isEmpty else { return }
-        trace("notify bytes=\(frame.count)")
+        trace("notify \(frameSummary(frame))")
 
         do {
             let inbound = try codec.pushDeviceFrame(

@@ -618,7 +618,7 @@ struct ContentView: View {
                 } footer: {
                     Text("圆屏保持开机并靠近 iPhone。连接成功后，当前导航会自动同步。")
                 }
-                Section("通信诊断 · 0.3.1 (6)") {
+                Section("通信诊断 · 0.3.2 (7)") {
                     ShareLink(item: model.bleDiagnostics()) {
                         Label("导出蓝牙诊断", systemImage: "square.and.arrow.up")
                     }

@@ -568,9 +568,9 @@ final class ESP32BLECentral: NSObject {
         gattSetupTimeoutTask?.cancel()
         gattSetupTimeoutTask = nil
         gattSetupInProgress = false
-        let writeType: CBCharacteristicWriteType = rx.properties.contains(.writeWithoutResponse)
-            ? .withoutResponse
-            : .withResponse
+        let writeType: CBCharacteristicWriteType = rx.properties.contains(.write)
+            ? .withResponse
+            : .withoutResponse
         let maximum = peripheral.maximumWriteValueLength(for: writeType)
         let localMaximumFrameSize = max(
             BLEHandshakeGate.minimumFrameSize,
@@ -1009,7 +1009,11 @@ final class ESP32BLECentral: NSObject {
               !outboundFrames.isEmpty
         else { return }
 
-        if characteristic.properties.contains(.writeWithoutResponse) {
+        // Prefer acknowledged writes: on the test iPhone the no-response
+        // credit remains false after its first frame while notifications flow.
+        // The existing didWrite callback drains exactly one frame at a time.
+        if !characteristic.properties.contains(.write),
+           characteristic.properties.contains(.writeWithoutResponse) {
             guard writePumpTask == nil else { return }
             let now = Self.monotonicMs()
             switch BLEWritePumpPolicy.action(

@@ -3,7 +3,10 @@ import MotoNavigationCore
 
 @MainActor
 final class CoreLocationNavigationSource: NSObject, NavigationLocationSource {
-    private static let maximumFixAgeS: TimeInterval = 15
+    private static let maximumFixAgeS: TimeInterval = 5
+    var onDiagnostic: ((String) -> Void)?
+    private var lastCallbackUptime: TimeInterval?
+    private var lastAcceptedTimestamp: Date?
     private let manager = CLLocationManager()
     private var onFix: (@MainActor (NavigationFix) -> Void)?
     private var onFailure: (@MainActor (String) -> Void)?
@@ -34,6 +37,9 @@ final class CoreLocationNavigationSource: NSObject, NavigationLocationSource {
         self.onFix = onFix
         self.onFailure = onFailure
         wantsUpdates = true
+        lastAcceptedTimestamp = nil
+        lastCallbackUptime = nil
+        onDiagnostic?("start auth=\(manager.authorizationStatus.rawValue) accuracyAuth=\(manager.accuracyAuthorization.rawValue)")
 
         switch manager.authorizationStatus {
         case .notDetermined:
@@ -74,16 +80,30 @@ extension CoreLocationNavigationSource: @preconcurrency CLLocationManagerDelegat
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard wantsUpdates else { return }
         let now = Date()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        let gap = lastCallbackUptime.map { uptime - $0 } ?? -1
+        lastCallbackUptime = uptime
+        if let newest = locations.max(by: { $0.timestamp < $1.timestamp }) {
+            onDiagnostic?("callback count=\(locations.count) gap_s=\(gap) age_s=\(now.timeIntervalSince(newest.timestamp)) accuracy_m=\(newest.horizontalAccuracy) duplicate=\(lastAcceptedTimestamp.map { newest.timestamp <= $0 } ?? false)")
+        }
         guard let location = locations
             .filter({
                 $0.horizontalAccuracy >= 0 &&
                     $0.coordinate.latitude.isFinite &&
                     $0.coordinate.longitude.isFinite &&
-                    abs($0.timestamp.timeIntervalSince(now)) <= Self.maximumFixAgeS
+                    now.timeIntervalSince($0.timestamp) >= 0 &&
+                    now.timeIntervalSince($0.timestamp) <= Self.maximumFixAgeS
             })
             .max(by: { $0.timestamp < $1.timestamp })
-        else { return }
+        else { onDiagnostic?("reject invalid or older-than-5s fix"); return }
+        if let lastAcceptedTimestamp, location.timestamp <= lastAcceptedTimestamp {
+            onDiagnostic?("reject duplicate or out-of-order fix")
+            return
+        }
+        lastAcceptedTimestamp = location.timestamp
+        onDiagnostic?("accept age_s=\(now.timeIntervalSince(location.timestamp))")
 
         onFix?(
             NavigationFix(
@@ -100,7 +120,15 @@ extension CoreLocationNavigationSource: @preconcurrency CLLocationManagerDelegat
         )
     }
 
+    func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        onDiagnostic?("system paused location updates")
+        if wantsUpdates { manager.startUpdatingLocation() }
+    }
+    func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        onDiagnostic?("system resumed location updates")
+    }
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        onDiagnostic?("location error code=\((error as NSError).code)")
         let locationError = error as? CLError
         if locationError?.code == .locationUnknown { return }
         onFailure?(error.localizedDescription)

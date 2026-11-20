@@ -576,6 +576,15 @@ void test_stale_location_stream_clears_displayed_speed() {
   fixture.core.handle(Tick{2'000});
   CHECK(fixture.core.snapshot().gnss_stale);
   CHECK(fixture.core.snapshot().speed_mps == 0.0F);
+  fixture.core.handle(GnssFixReceived{fix(kStart, 1'500)});
+  CHECK(fixture.core.snapshot().gnss_stale);
+  CHECK(fixture.core.snapshot().speed_mps == 0.0F);
+  fixture.core.handle(GnssFixReceived{fix(kStart, 1'000)});
+  CHECK(fixture.core.snapshot().gnss_stale);
+  fixture.core.handle(GnssFixReceived{fix(kStart, 2'001)});
+  CHECK(!fixture.core.snapshot().gnss_stale);
+  CHECK(fixture.core.snapshot().speed_mps == 8.0F);
+
 }
 
 }  // namespace

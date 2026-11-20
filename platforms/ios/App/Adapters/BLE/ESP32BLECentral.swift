@@ -214,6 +214,8 @@ final class ESP32BLECentral: NSObject {
         #endif
     }
 
+    func recordLocationDiagnostic(_ line: String) { trace("LOCATION \(line)") }
+
     func diagnostics() -> String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"

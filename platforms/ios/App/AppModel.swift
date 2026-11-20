@@ -45,6 +45,9 @@ final class AppModel: ObservableObject {
         mapGatewayBaseURL = gatewayBaseURL
         surroundingMap = SurroundingMapStore(baseURL: gatewayBaseURL)
         recentPlaces = Self.loadRecentPlaces()
+        liveLocation.onDiagnostic = { [weak self] line in
+            self?.bluetooth.recordLocationDiagnostic(line)
+        }
 
         surroundingMap.onScene = { [weak self] scene in
             self?.bluetooth.sendMapScene(scene)

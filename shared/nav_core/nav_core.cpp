@@ -237,6 +237,11 @@ void NavCore::accept_fix(const GnssFix& fix, NavCommands& commands) {
   }
 
   view_.now_ms = std::max(view_.now_ms, fix.timestamp_ms);
+  // A delayed (or repeated cached) fix must not revive stale navigation
+  // until the next Tick immediately expires it again.
+  if (view_.now_ms - fix.timestamp_ms > config_.gnss_stale_after_ms) {
+    return;
+  }
   if (!usable_fix(fix)) {
     return;
   }

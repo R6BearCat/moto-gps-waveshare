@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
 
     steps:
       - name: Checkout repository
@@ -104,3 +104,4 @@ jobs:
           path: MotoGPS-unsigned.ipa
           if-no-files-found: error
           retention-days: 7
+

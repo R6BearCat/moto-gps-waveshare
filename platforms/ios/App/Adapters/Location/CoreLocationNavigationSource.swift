@@ -3,7 +3,7 @@ import MotoNavigationCore
 
 @MainActor
 final class CoreLocationNavigationSource: NSObject, NavigationLocationSource {
-    private static let maximumFixAgeS: TimeInterval = 5
+    private static let maximumFixAgeS: TimeInterval = 8
     var onDiagnostic: ((String) -> Void)?
     private var lastCallbackUptime: TimeInterval?
     private var lastAcceptedTimestamp: Date?
@@ -17,11 +17,8 @@ final class CoreLocationNavigationSource: NSObject, NavigationLocationSource {
         manager.delegate = self
         manager.activityType = .automotiveNavigation
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        // Keep fixes flowing even while the bike is parked: with a 2 m
-        // distance filter Core Location stops reporting when the rider
-        // stands still, leaving the last non-zero speed frozen on the
-        // handlebar gauge. kCLDistanceFilterNone keeps ~1 Hz updates so
-        // the speed decays to zero within a couple of seconds.
+        // Report all movement; this does not guarantee a fixed update rate.
+        // A stationary phone may deliver fresh fixes about six seconds apart.
         manager.distanceFilter = kCLDistanceFilterNone
         manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = true
@@ -97,7 +94,7 @@ extension CoreLocationNavigationSource: @preconcurrency CLLocationManagerDelegat
                     now.timeIntervalSince($0.timestamp) <= Self.maximumFixAgeS
             })
             .max(by: { $0.timestamp < $1.timestamp })
-        else { onDiagnostic?("reject invalid or older-than-5s fix"); return }
+        else { onDiagnostic?("reject invalid or older-than-8s fix"); return }
         if let lastAcceptedTimestamp, location.timestamp <= lastAcceptedTimestamp {
             onDiagnostic?("reject duplicate or out-of-order fix")
             return
@@ -134,3 +131,4 @@ extension CoreLocationNavigationSource: @preconcurrency CLLocationManagerDelegat
         onFailure?(error.localizedDescription)
     }
 }
+

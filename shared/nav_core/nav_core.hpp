@@ -54,7 +54,7 @@ struct NavCoreConfig {
   std::uint8_t off_route_confirmations = 3;
   float arrival_radius_m = 20.0F;
   std::uint8_t arrival_confirmations = 2;
-  TimestampMs gnss_stale_after_ms = 5'000;
+  TimestampMs gnss_stale_after_ms = 8'000;
   TimestampMs route_retry_after_ms = 5'000;
   TimestampMs traffic_refresh_interval_ms = 60'000;
   TimestampMs traffic_retry_after_ms = 10'000;
@@ -200,3 +200,4 @@ const char* to_string(NetworkState state);
 const char* to_string(TrafficLevel level);
 
 }  // namespace moto::nav
+

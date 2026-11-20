@@ -587,6 +587,23 @@ void test_stale_location_stream_clears_displayed_speed() {
 
 }
 
+void test_six_second_updates_and_eight_second_timeout() {
+  RunningFixture fixture;
+  fixture.core.handle(GnssFixReceived{fix(kStart, 10'000)});
+  fixture.core.handle(Tick{16'300});
+  CHECK(!fixture.core.snapshot().gnss_stale);
+  fixture.core.handle(GnssFixReceived{fix(kStart, 16'300)});
+  fixture.core.handle(Tick{24'300});
+  CHECK(!fixture.core.snapshot().gnss_stale);
+  fixture.core.handle(Tick{24'301});
+  CHECK(fixture.core.snapshot().gnss_stale);
+  CHECK(fixture.core.snapshot().speed_mps == 0.0F);
+  fixture.core.handle(GnssFixReceived{fix(kStart, 16'300)});
+  CHECK(fixture.core.snapshot().gnss_stale);
+  fixture.core.handle(GnssFixReceived{fix(kStart, 24'302)});
+  CHECK(!fixture.core.snapshot().gnss_stale);
+}
+
 }  // namespace
 
 int main() {
@@ -610,6 +627,7 @@ int main() {
   test_malformed_route_numbers_are_contained();
   test_stationary_fix_zeroes_speed_and_holds_heading();
   test_stale_location_stream_clears_displayed_speed();
+  test_six_second_updates_and_eight_second_timeout();
 
   if (failures != 0) {
     std::cerr << failures << " nav_core checks failed\n";
@@ -618,3 +636,4 @@ int main() {
   std::cout << "All nav_core fixture checks passed\n";
   return EXIT_SUCCESS;
 }
+
